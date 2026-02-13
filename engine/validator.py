@@ -1,63 +1,75 @@
 """
-SQLidator Core Validator Engine
---------------------------------
-This file acts as the central brain of the application.
+SQLidator Core Validator Engine (Parser-Based)
+----------------------------------------------
+This is the central brain of SQLidator.
+
+Flow:
+    Query → Lexer → Parser → AST
 
 Responsibilities:
-- Normalize query
-- Route to correct dialect
-- Catch ALL errors
+- Run lexical analysis
+- Run syntax parsing
+- Catch SQL-style syntax errors
 - Return structured response
 - Prevent crashes
 """
 
-from engine.normalizer import normalize_query
-
-from dialects.mysql.mysql_validation import validate_mysql
-from dialects.postgres.postgres_validation import validate_postgres
-from dialects.plsql.plsql_validation import validate_plsql
+from engine.lexer import Lexer
+from engine.parser import Parser
+from engine.errors import SQLSyntaxError
 
 
-def validate_query(query: str, dialect: str = "mysql") -> dict:
+def validate_query(query: str, dialect: str = "postgres") -> dict:
     """
     Main validation entry point.
-    
+
     Parameters:
         query (str): SQL query input
-        dialect (str): mysql | postgres | plsql
+        dialect (str): postgres | mysql | plsql
 
     Returns:
         dict: structured validation result
     """
 
     try:
-        # Basic input validation
+        # -----------------------------
+        # Basic Input Validation
+        # -----------------------------
         if not isinstance(query, str):
-            return _error_response("Query must be a string.")
+            return _error_response("Query must be a string.", dialect)
 
         if not query.strip():
-            return _error_response("Query cannot be empty.")
+            return _error_response("Query cannot be empty.", dialect)
 
-        # Normalize query
-        query = normalize_query(query)
+        # -----------------------------
+        # Lexical Analysis
+        # -----------------------------
+        lexer = Lexer(query)
+        tokens = lexer.tokenize()
 
-        dialect = dialect.lower()
+        # -----------------------------
+        # Parsing
+        # -----------------------------
+        parser = Parser(tokens, query, dialect)
+        ast = parser.parse()
 
-        # Dialect routing
-        if dialect == "mysql":
-            return validate_mysql(query)
+        return {
+            "status": "success",
+            "dialect": dialect,
+            "type": None,
+            "message": "Query parsed successfully.",
+            "ast": ast
+        }
 
-        elif dialect == "postgres":
-            return validate_postgres(query)
-
-        elif dialect == "plsql":
-            return validate_plsql(query)
-
-        else:
-            return _error_response(f"Unsupported SQL dialect: {dialect}")
+    except SQLSyntaxError as e:
+        return {
+            "status": "error",
+            "dialect": dialect,
+            "type": "SyntaxError",
+            "message": str(e)
+        }
 
     except Exception as e:
-        # Absolute fail-safe catch
         return {
             "status": "error",
             "dialect": dialect,
@@ -66,13 +78,10 @@ def validate_query(query: str, dialect: str = "mysql") -> dict:
         }
 
 
-def _error_response(message: str) -> dict:
-    """
-    Standard error response format.
-    """
+def _error_response(message: str, dialect: str) -> dict:
     return {
         "status": "error",
-        "dialect": None,
+        "dialect": dialect,
         "type": "ValidationError",
         "message": message
     }

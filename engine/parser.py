@@ -1,18 +1,26 @@
 """
-SQL Parser (Phase 10 - Full DML + DDL + VIEW Support)
-------------------------------------------------------
+SQL Parser - Stable Core Version
+---------------------------------
 Supports:
+
+DML:
 - SELECT (WHERE, GROUP BY, HAVING, ORDER BY, LIMIT)
 - INSERT
-- DELETE
 - UPDATE
+- DELETE
+
+DDL:
 - CREATE TABLE
 - ALTER TABLE
 - DROP TABLE
 - CREATE VIEW
 - DROP VIEW
-Strict mode.
-Stops on first error.
+
+Features:
+- Nested SELECT
+- Expression parser integration
+- Multiple statements
+- Strict SQL-style errors
 """
 
 from engine.tokens import TokenType
@@ -32,6 +40,7 @@ from engine.errors import SQLSyntaxError
 
 
 class Parser:
+
     def __init__(self, tokens, query, dialect="postgres"):
         self.tokens = tokens
         self.query = query
@@ -40,7 +49,7 @@ class Parser:
         self.current_token = self.tokens[self.position]
 
     # ======================================================
-    # MAIN ENTRY
+    # ENTRY
     # ======================================================
 
     def parse(self):
@@ -58,21 +67,22 @@ class Parser:
         return statements
 
     # ======================================================
-    # STATEMENT DISPATCH
+    # DISPATCH
     # ======================================================
 
     def parse_statement(self):
+
         if self.match_keyword("SELECT"):
             return self.parse_select()
 
         if self.match_keyword("INSERT"):
             return self.parse_insert()
 
-        if self.match_keyword("DELETE"):
-            return self.parse_delete()
-
         if self.match_keyword("UPDATE"):
             return self.parse_update()
+
+        if self.match_keyword("DELETE"):
+            return self.parse_delete()
 
         if self.match_keyword("CREATE"):
             return self.parse_create()
@@ -86,18 +96,180 @@ class Parser:
         self.raise_error()
 
     # ======================================================
+    # SELECT
+    # ======================================================
+
+    def parse_select(self):
+        self.expect_keyword("SELECT")
+
+        columns = self.parse_select_list()
+
+        self.expect_keyword("FROM")
+
+        from_table = self.parse_table_source()
+
+        where_clause = None
+        group_by = None
+        having = None
+        order_by = None
+        limit = None
+
+        if self.match_keyword("WHERE"):
+            self.advance()
+            expr_parser = ExpressionParser(self)
+            where_clause = expr_parser.parse_expression()
+
+        if self.match_keyword("GROUP"):
+            self.advance()
+            self.expect_keyword("BY")
+            group_by = self.parse_identifier_list()
+
+        if self.match_keyword("HAVING"):
+            self.advance()
+            expr_parser = ExpressionParser(self)
+            having = expr_parser.parse_expression()
+
+        if self.match_keyword("ORDER"):
+            self.advance()
+            self.expect_keyword("BY")
+            order_by = self.parse_identifier_list()
+
+        if self.match_keyword("LIMIT"):
+            self.advance()
+
+            if self.current_token.type != TokenType.NUMBER:
+                self.raise_error()
+
+            limit = self.current_token.value
+            self.advance()
+
+        return SelectNode(
+            columns,
+            from_table,
+            where_clause,
+            group_by,
+            having,
+            order_by,
+            limit
+        )
+
+    # ======================================================
+    # INSERT
+    # ======================================================
+
+    def parse_insert(self):
+        self.expect_keyword("INSERT")
+        self.expect_keyword("INTO")
+
+        table_name = self.expect_identifier()
+
+        columns = None
+        if self.current_token.type == TokenType.PAREN_OPEN:
+            self.advance()
+            columns = self.parse_identifier_list()
+            self.expect(TokenType.PAREN_CLOSE)
+
+        self.expect_keyword("VALUES")
+
+        values = self.parse_value_groups()
+
+        return InsertNode(table_name, columns, values)
+
+    def parse_value_groups(self):
+        groups = []
+
+        while True:
+            self.expect(TokenType.PAREN_OPEN)
+            group = []
+
+            while self.current_token.type != TokenType.PAREN_CLOSE:
+                group.append(self.current_token.value)
+                self.advance()
+
+                if self.current_token.type == TokenType.COMMA:
+                    self.advance()
+
+            self.expect(TokenType.PAREN_CLOSE)
+            groups.append(group)
+
+            if self.current_token.type == TokenType.COMMA:
+                self.advance()
+            else:
+                break
+
+        return groups
+
+    # ======================================================
+    # UPDATE
+    # ======================================================
+
+    def parse_update(self):
+        self.expect_keyword("UPDATE")
+        table_name = self.expect_identifier()
+
+        self.expect_keyword("SET")
+        assignments = self.parse_assignments()
+
+        where_clause = None
+        if self.match_keyword("WHERE"):
+            self.advance()
+            expr_parser = ExpressionParser(self)
+            where_clause = expr_parser.parse_expression()
+
+        return UpdateNode(table_name, assignments, where_clause)
+
+    def parse_assignments(self):
+        assignments = []
+
+        while True:
+            column = self.expect_identifier()
+
+            if self.current_token.type != TokenType.OPERATOR or self.current_token.value != "=":
+                self.raise_error()
+
+            self.advance()
+
+            value = self.current_token.value
+            self.advance()
+
+            assignments.append((column, value))
+
+            if self.current_token.type == TokenType.COMMA:
+                self.advance()
+            else:
+                break
+
+        return assignments
+
+    # ======================================================
+    # DELETE
+    # ======================================================
+
+    def parse_delete(self):
+        self.expect_keyword("DELETE")
+        self.expect_keyword("FROM")
+
+        table_name = self.expect_identifier()
+
+        where_clause = None
+        if self.match_keyword("WHERE"):
+            self.advance()
+            expr_parser = ExpressionParser(self)
+            where_clause = expr_parser.parse_expression()
+
+        return DeleteNode(table_name, where_clause)
+
+    # ======================================================
     # CREATE
     # ======================================================
 
     def parse_create(self):
         self.expect_keyword("CREATE")
 
-        # CREATE TABLE
         if self.match_keyword("TABLE"):
             self.advance()
             return self.parse_create_table()
 
-        # CREATE VIEW
         if self.match_keyword("VIEW"):
             self.advance()
             return self.parse_create_view()
@@ -106,7 +278,6 @@ class Parser:
 
     def parse_create_view(self):
         view_name = self.expect_identifier()
-
         self.expect_keyword("AS")
 
         if not self.match_keyword("SELECT"):
@@ -118,7 +289,6 @@ class Parser:
 
     def parse_create_table(self):
         table_name = self.expect_identifier()
-
         self.expect(TokenType.PAREN_OPEN)
 
         columns = self.parse_column_definitions()
@@ -127,29 +297,70 @@ class Parser:
 
         return CreateTableNode(table_name, columns)
 
-    # ======================================================
-    # DROP
-    # ======================================================
+    def parse_column_definitions(self):
+        columns = []
 
-    def parse_drop(self):
-        self.expect_keyword("DROP")
+        while True:
+            column_name = self.expect_identifier()
 
-        # DROP TABLE
-        if self.match_keyword("TABLE"):
+            if self.current_token.type not in (
+                TokenType.IDENTIFIER,
+                TokenType.KEYWORD
+            ):
+                self.raise_error()
+
+            datatype = self.current_token.value
             self.advance()
-            table_name = self.expect_identifier()
-            return DropTableNode(table_name)
 
-        # DROP VIEW
-        if self.match_keyword("VIEW"):
-            self.advance()
-            view_name = self.expect_identifier()
-            return DropViewNode(view_name)
+            # Handle datatype size (e.g., VARCHAR(100), DECIMAL(10,2))
+            if self.current_token.type == TokenType.PAREN_OPEN:
+                datatype += "("
+                self.advance()
 
-        self.raise_error()
+                while self.current_token.type != TokenType.PAREN_CLOSE:
+                    datatype += str(self.current_token.value)
+                    self.advance()
+
+                datatype += ")"
+                self.advance()
+
+            constraints = []
+
+            while (
+                self.match_keyword("PRIMARY")
+                or self.match_keyword("NOT")
+                or self.match_keyword("UNIQUE")
+            ):
+
+                if self.match_keyword("PRIMARY"):
+                    self.advance()
+                    self.expect_keyword("KEY")
+                    constraints.append("PRIMARY KEY")
+
+                elif self.match_keyword("NOT"):
+                    self.advance()
+                    self.expect_keyword("NULL")
+                    constraints.append("NOT NULL")
+
+                elif self.match_keyword("UNIQUE"):
+                    self.advance()
+                    constraints.append("UNIQUE")
+
+            columns.append({
+                "name": column_name,
+                "datatype": datatype,
+                "constraints": constraints
+            })
+
+            if self.current_token.type == TokenType.COMMA:
+                self.advance()
+            else:
+                break
+
+        return columns
 
     # ======================================================
-    # ALTER TABLE
+    # ALTER
     # ======================================================
 
     def parse_alter(self):
@@ -218,197 +429,25 @@ class Parser:
         self.raise_error()
 
     # ======================================================
-    # SELECT
+    # DROP
     # ======================================================
 
-    def parse_select(self):
-        self.expect_keyword("SELECT")
+    def parse_drop(self):
+        self.expect_keyword("DROP")
 
-        columns = self.parse_select_list()
-
-        self.expect_keyword("FROM")
-
-        from_table = self.parse_table_source()
-
-        where_clause = None
-        group_by = None
-        having = None
-        order_by = None
-        limit = None
-
-        if self.match_keyword("WHERE"):
+        if self.match_keyword("TABLE"):
             self.advance()
-            expr_parser = ExpressionParser(self)
-            where_clause = expr_parser.parse_expression()
+            return DropTableNode(self.expect_identifier())
 
-        if self.match_keyword("GROUP"):
+        if self.match_keyword("VIEW"):
             self.advance()
-            self.expect_keyword("BY")
-            group_by = self.parse_identifier_list()
+            return DropViewNode(self.expect_identifier())
 
-        if self.match_keyword("HAVING"):
-            self.advance()
-            expr_parser = ExpressionParser(self)
-            having = expr_parser.parse_expression()
-
-        if self.match_keyword("ORDER"):
-            self.advance()
-            self.expect_keyword("BY")
-            order_by = self.parse_identifier_list()
-
-        if self.match_keyword("LIMIT"):
-            self.advance()
-            if self.current_token.type != TokenType.NUMBER:
-                self.raise_error()
-            limit = self.current_token.value
-            self.advance()
-
-        return SelectNode(
-            columns,
-            from_table,
-            where_clause,
-            group_by,
-            having,
-            order_by,
-            limit
-        )
+        self.raise_error()
 
     # ======================================================
-    # DML
+    # HELPERS
     # ======================================================
-
-    def parse_insert(self):
-        self.expect_keyword("INSERT")
-        self.expect_keyword("INTO")
-        table_name = self.expect_identifier()
-
-        columns = None
-        if self.current_token.type == TokenType.PAREN_OPEN:
-            self.advance()
-            columns = self.parse_identifier_list()
-            self.expect(TokenType.PAREN_CLOSE)
-
-        self.expect_keyword("VALUES")
-        values = self.parse_value_groups()
-
-        return InsertNode(table_name, columns, values)
-
-    def parse_delete(self):
-        self.expect_keyword("DELETE")
-        self.expect_keyword("FROM")
-        table_name = self.expect_identifier()
-
-        where_clause = None
-        if self.match_keyword("WHERE"):
-            self.advance()
-            expr_parser = ExpressionParser(self)
-            where_clause = expr_parser.parse_expression()
-
-        return DeleteNode(table_name, where_clause)
-
-    def parse_update(self):
-        self.expect_keyword("UPDATE")
-        table_name = self.expect_identifier()
-        self.expect_keyword("SET")
-        assignments = self.parse_assignments()
-
-        where_clause = None
-        if self.match_keyword("WHERE"):
-            self.advance()
-            expr_parser = ExpressionParser(self)
-            where_clause = expr_parser.parse_expression()
-
-        return UpdateNode(table_name, assignments, where_clause)
-
-    # ======================================================
-    # Helpers
-    # ======================================================
-
-    def parse_column_definitions(self):
-        columns = []
-
-        while True:
-            column_name = self.expect_identifier()
-            datatype = self.current_token.value
-            self.advance()
-
-            constraints = []
-
-            while self.match_keyword("PRIMARY") or \
-                  self.match_keyword("NOT") or \
-                  self.match_keyword("UNIQUE"):
-
-                if self.match_keyword("PRIMARY"):
-                    self.advance()
-                    self.expect_keyword("KEY")
-                    constraints.append("PRIMARY KEY")
-
-                elif self.match_keyword("NOT"):
-                    self.advance()
-                    self.expect_keyword("NULL")
-                    constraints.append("NOT NULL")
-
-                elif self.match_keyword("UNIQUE"):
-                    self.advance()
-                    constraints.append("UNIQUE")
-
-            columns.append({
-                "name": column_name,
-                "datatype": datatype,
-                "constraints": constraints
-            })
-
-            if self.current_token.type == TokenType.COMMA:
-                self.advance()
-            else:
-                break
-
-        return columns
-
-    def parse_value_groups(self):
-        groups = []
-
-        while True:
-            self.expect(TokenType.PAREN_OPEN)
-            group = []
-
-            while self.current_token.type != TokenType.PAREN_CLOSE:
-                group.append(self.current_token.value)
-                self.advance()
-                if self.current_token.type == TokenType.COMMA:
-                    self.advance()
-
-            self.expect(TokenType.PAREN_CLOSE)
-            groups.append(group)
-
-            if self.current_token.type == TokenType.COMMA:
-                self.advance()
-            else:
-                break
-
-        return groups
-
-    def parse_assignments(self):
-        assignments = []
-
-        while True:
-            column = self.expect_identifier()
-
-            if self.current_token.type != TokenType.OPERATOR or self.current_token.value != "=":
-                self.raise_error()
-
-            self.advance()
-            value = self.current_token.value
-            self.advance()
-
-            assignments.append((column, value))
-
-            if self.current_token.type == TokenType.COMMA:
-                self.advance()
-            else:
-                break
-
-        return assignments
 
     def parse_select_list(self):
         columns = []
@@ -449,6 +488,7 @@ class Parser:
         identifiers = []
         while True:
             identifiers.append(self.expect_identifier())
+
             if self.current_token.type == TokenType.COMMA:
                 self.advance()
             else:
@@ -461,6 +501,7 @@ class Parser:
             TokenType.QUOTED_IDENTIFIER
         ):
             self.raise_error()
+
         value = self.current_token.value
         self.advance()
         return value
@@ -485,6 +526,10 @@ class Parser:
         self.position += 1
         if self.position < len(self.tokens):
             self.current_token = self.tokens[self.position]
+
+    # ======================================================
+    # ERROR
+    # ======================================================
 
     def raise_error(self):
         if self.current_token.type == TokenType.EOF:
