@@ -1,0 +1,6 @@
+-- CREATE TABLE Persons (PersonID int,LastName varchar(255), FirstName varchar(255), Address varchar(255), City varchar(255));
+-- SELECT * FROM Persons;
+-- ALTER TABLE Persons ADD COLUMN Age int;
+-- INSERT INTO Persons (PersonID, LastName, FirstName, Address, City, Age) VALUES (1, 'Smith', 'John', '123 Main St', 'Anytown', 30);
+-- UPDATE Persons SET Age = 31 WHERE PersonID = 1;
+-- DELETE FROM Persons WHERE PersonID = 1;

@@ -3,11 +3,10 @@ SQLidator CLI (Parser-Based Version)
 ------------------------------------
 Supports:
 - Direct query input
-- .sql file input
+- .sql file input (multiple statements)
 - Dialect selection
 - Optional AI suggestions
 - Report generation (TXT / JSON / CSV)
-- Multiple statements
 """
 
 import sys
@@ -43,7 +42,7 @@ def show_banner():
 
 
 # ==========================================================
-# MAIN
+# MAIN FUNCTION
 # ==========================================================
 
 def main():
@@ -53,7 +52,6 @@ def main():
 
     parser.add_argument("--query", type=str, help="SQL query string")
     parser.add_argument("--file", type=str, help="Path to .sql file")
-
     parser.add_argument(
         "--dialect",
         type=str,
@@ -61,119 +59,104 @@ def main():
         choices=["postgres", "mysql", "plsql"],
         help="SQL dialect"
     )
-
-    parser.add_argument("--ai", action="store_true",
-                        help="Enable AI suggestions")
-
-    parser.add_argument("--report", choices=["txt", "json", "csv"],
-                        help="Generate report file")
-
-    parser.add_argument("--output", type=str,
-                        help="Custom output filename (without extension)")
+    parser.add_argument("--ai", action="store_true", help="Enable AI suggestions")
+    parser.add_argument("--report", choices=["txt", "json", "csv"], help="Generate report file")
+    parser.add_argument("--output", type=str, help="Custom output filename (without extension)")
 
     args = parser.parse_args()
 
     # ------------------------------------------------------
-    # Load Query
+    # Load Queries
     # ------------------------------------------------------
+    queries = []
+
     if args.file:
         if not os.path.exists(args.file):
             print("❌ File not found.")
             sys.exit(1)
 
         with open(args.file, "r", encoding="utf-8") as f:
-            query = f.read()
+            content = f.read()
+
+        # Split queries by semicolon and strip whitespace
+        queries = [q.strip() + ';' for q in content.split(';') if q.strip()]
+        print(f"\nFound {len(queries)} queries in file")
 
     elif args.query:
-        query = args.query
+        queries = [args.query.strip()]
 
     else:
         print("❌ Provide --query or --file")
         sys.exit(1)
 
-    print("\n" + "=" * 60)
-    print("QUERY:")
-    # print("=" * 60)
-    print(query)
-    print("=" * 60)
+    all_results = []
 
     # ------------------------------------------------------
-    # Validate
+    # Process Each Query
     # ------------------------------------------------------
-    result = validate_query(query, args.dialect)
+    for idx, query in enumerate(queries, 1):
+        print("\n" + "=" * 60)
+        print(f"QUERY {idx}:")
+        print(query)
+        print("=" * 60)
 
-    # ------------------------------------------------------
-    # Print Result
-    # ------------------------------------------------------
-    print("\nRESULT:")
-    print("-" * 60)
+        # Validate query
+        result = validate_query(query, args.dialect)
+        all_results.append(result)
 
-    status = result.get("status")
-
-    print("Status  :", status.upper())
-    print("Dialect :", result.get("dialect"))
-    print("Message :", result.get("message"))
-
-    if status == "error":
-        print("Type    :", result.get("type"))
-
-    # ------------------------------------------------------
-    # Print AST (if success)
-    # ------------------------------------------------------
-    if status == "success":
-        print("\nAST:")
+        # Print result
+        print("\nRESULT:")
         print("-" * 60)
+        status = result.get("status")
+        print("Status  :", status.upper())
+        print("Dialect :", result.get("dialect"))
+        print("Message :", result.get("message"))
+        if status == "error":
+            print("Type    :", result.get("type"))
 
-        ast = result.get("ast")
+        # Print AST if success
+        if status == "success":
+            print("\nAST:")
+            print("-" * 60)
+            ast = result.get("ast")
+            if isinstance(ast, list):
+                for j, stmt in enumerate(ast, 1):
+                    print(f"\nStatement {j}:")
+                    print(stmt)
+            else:
+                print(ast)
 
-        if isinstance(ast, list):
-            for i, stmt in enumerate(ast, 1):
-                print(f"\nStatement {i}:")
-                print(stmt)
-        else:
-            print(ast)
-
-    # ------------------------------------------------------
-    # AI Suggestions (CLI Short Mode)
-    # ------------------------------------------------------
-    ai_result = None
-
-    if args.ai:
-        print("\nAI SUGGESTIONS:")
-        print("-" * 60)
-
-        ai_result = get_ai_suggestion(query, result, mode="cli")
-
-        if ai_result and ai_result.get("ai_status") == "success":
-            print(ai_result.get("ai_message"))
-        else:
-            print("No AI suggestions available.")
+        # AI suggestions
+        if args.ai:
+            print("\nAI SUGGESTIONS:")
+            print("-" * 60)
+            ai_result = get_ai_suggestion(query, result, mode="cli")
+            if ai_result and ai_result.get("ai_status") == "success":
+                print(ai_result.get("ai_message"))
+            else:
+                print("No AI suggestions available.")
 
     # ------------------------------------------------------
     # Report Generation
     # ------------------------------------------------------
     if args.report:
-
-        report_ai_result = None
-
+        report_ai_results = None
         if args.ai:
-            if args.report == "json":
-                report_ai_result = get_ai_suggestion(query, result, mode="json")
-            elif args.report == "csv":
-                report_ai_result = get_ai_suggestion(query, result, mode="csv")
-            else:
-                report_ai_result = get_ai_suggestion(query, result, mode="txt")
+            # Generate AI suggestions for each query in report mode
+            report_ai_results = [
+                get_ai_suggestion(q, r, mode=args.report)
+                for q, r in zip(queries, all_results)
+            ]
 
+        # Generate report content
         if args.report == "txt":
-            content = generate_text_report(query, result, report_ai_result)
+            content = generate_text_report(queries, all_results, report_ai_results)
             extension = "txt"
-
         elif args.report == "json":
-            content = generate_json_report(query, result, report_ai_result)
+            content = generate_json_report(queries, all_results, report_ai_results)
             extension = "json"
-
         elif args.report == "csv":
-            content = generate_csv_report(query, result, report_ai_result)
+            content = generate_csv_report(queries, all_results, report_ai_results)
             extension = "csv"
 
         filename = args.output if args.output else "sqlidator_report"

@@ -2,7 +2,7 @@ from engine.validator import validate_query
 
 query = """
 CREATE TABLE users (
-    id INT,
+    id INT
     name VARCHAR(100)
 );
 """
